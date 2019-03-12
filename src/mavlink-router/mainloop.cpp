@@ -19,8 +19,9 @@
 
 #include <assert.h>
 #include <signal.h>
-#include <sys/epoll.h>
-#include <sys/timerfd.h>
+#include <sys/types.h>
+#include <sys/event.h>
+#include <sys/time.h>
 #include <unistd.h>
 
 #include <memory>
@@ -67,7 +68,7 @@ int Mainloop::open()
     if (epollfd != -1)
         return -EBUSY;
 
-    epollfd = epoll_create1(EPOLL_CLOEXEC);
+    epollfd = kqueue();
 
     if (epollfd == -1) {
         log_error("%m");
@@ -77,30 +78,30 @@ int Mainloop::open()
     return 0;
 }
 
-int Mainloop::mod_fd(int fd, void *data, int events)
+int Mainloop::mod_fd(int fd, void *data, uint16_t event)
 {
-    struct epoll_event epev = { };
+    struct kevent epev = { };
 
-    epev.events = events;
-    epev.data.ptr = data;
+    remove_fd(fd);
 
-    if (epoll_ctl(epollfd, EPOLL_CTL_MOD, fd, &epev) < 0) {
-        log_error("Could not mod fd (%m)");
+    EV_SET(&epev, fd, event, EV_ADD, 0, 0, data);
+
+    if (kevent(epollfd, &epev, 1, NULL, 0, NULL) < 0) {
+        log_error("Could not mod fd (%m): %s", strerror(errno));
         return -1;
     }
 
     return 0;
 }
 
-int Mainloop::add_fd(int fd, void *data, int events)
+int Mainloop::add_fd(int fd, void *data, uint16_t event)
 {
-    struct epoll_event epev = { };
+    struct kevent epev = { };
 
-    epev.events = events;
-    epev.data.ptr = data;
+    EV_SET(&epev, fd, event, EV_ADD, 0, 0, data);
 
-    if (epoll_ctl(epollfd, EPOLL_CTL_ADD, fd, &epev) < 0) {
-        log_error("Could not add fd to epoll (%m)");
+    if (kevent(epollfd, &epev, 1, NULL, 0, NULL) < 0) {
+        log_error("Could not add fd to kqueue (%m)");
         return -1;
     }
 
@@ -109,12 +110,33 @@ int Mainloop::add_fd(int fd, void *data, int events)
 
 int Mainloop::remove_fd(int fd)
 {
-    if (epoll_ctl(epollfd, EPOLL_CTL_DEL, fd, NULL) < 0) {
-        log_error("Could not remove fd from epoll (%m)");
+    struct kevent evs[2];
+
+    EV_SET(&evs[0], fd, EVFILT_READ, EV_DELETE, 0, 0, 0);
+    EV_SET(&evs[1], fd, EVFILT_WRITE, EV_DELETE, 0, 0, 0);
+
+    // this can fail because we're trying to remove EVFILT_WRITE when it may not exist
+    if (kevent(epollfd, evs, 2, NULL, 0, NULL) < 0 && errno != ENOENT) {
+
+        log_error("Could not remove fd from kqueue (%m)");
         return -1;
     }
 
     return 0;
+}
+
+int Mainloop::remove_timer(Timeout* ident) {
+    struct kevent epev = { };
+
+    EV_SET(&epev, (uintptr_t) ident, EVFILT_TIMER, EV_DELETE, 0, 0, 0);
+
+    if (kevent(epollfd, &epev, 1, NULL, 0, NULL) < 0) {
+        log_error("Could not remove timer from kqueue (%m)");
+        return -1;
+    }
+
+    return 0;
+
 }
 
 int Mainloop::write_msg(Endpoint *e, const struct buffer *buf)
@@ -126,7 +148,7 @@ int Mainloop::write_msg(Endpoint *e, const struct buffer *buf)
      * possible to write again
      */
     if (r == -EAGAIN)
-        mod_fd(e->fd, e, EPOLLIN | EPOLLOUT);
+        add_fd(e->fd, e, EVFILT_WRITE);
 
     return r;
 }
@@ -217,7 +239,7 @@ int Mainloop::_add_tcp_endpoint(TcpEndpoint *tcp)
     tcp_entry->endpoint = tcp;
     g_tcp_endpoints = tcp_entry;
 
-    add_fd(tcp->fd, tcp, EPOLLIN);
+    add_fd(tcp->fd, tcp, EVFILT_READ);
 
     return 0;
 }
@@ -250,7 +272,7 @@ accept_error:
 void Mainloop::loop()
 {
     const int max_events = 8;
-    struct epoll_event events[max_events];
+    struct kevent events[max_events];
     int r;
 
     if (epollfd < 0)
@@ -264,18 +286,20 @@ void Mainloop::loop()
     while (!should_exit) {
         int i;
 
-        r = epoll_wait(epollfd, events, max_events, -1);
+        //r = epoll_wait(epollfd, events, max_events, -1);
+        r = kevent(epollfd, NULL, 0, events, max_events, NULL);
         if (r < 0 && errno == EINTR)
             continue;
 
+
         for (i = 0; i < r; i++) {
-            if (events[i].data.ptr == &g_tcp_fd) {
+            if (events[i].udata == &g_tcp_fd) {
                 handle_tcp_connection();
                 continue;
             }
-            Pollable *p = static_cast<Pollable *>(events[i].data.ptr);
+            Pollable *p = static_cast<Pollable *>(events[i].udata);
 
-            if (events[i].events & EPOLLIN) {
+            if (events[i].filter == EVFILT_READ || events[i].filter == EVFILT_TIMER) {
                 r = p->handle_read();
                 if (r < 0 && !p->is_valid()) {
                     // Only TcpEndpoint may become invalid after a read
@@ -283,12 +307,15 @@ void Mainloop::loop()
                 }
             }
 
-            if (events[i].events & EPOLLOUT) {
+            if (events[i].filter == EVFILT_WRITE) {
                 if (!p->handle_canwrite()) {
-                    mod_fd(p->fd, p, EPOLLIN);
+                    mod_fd(p->fd, p, EVFILT_READ);
                 }
             }
-            if (events[i].events & EPOLLERR) {
+
+            // TODO this would not handle well errors for timers
+            // because remove_fd won't work
+            if (events[i].flags & EV_ERROR) {
                 log_error("poll error for fd %i, closing it", p->fd);
                 remove_fd(p->fd);
                 // make poll errors fatal so that an external component can
@@ -311,7 +338,7 @@ void Mainloop::loop()
     while (_timeouts) {
         Timeout *current = _timeouts;
         _timeouts = current->next;
-        remove_fd(current->fd);
+        remove_timer(current);
         delete current;
     }
 }
@@ -390,7 +417,7 @@ bool Mainloop::add_endpoints(Mainloop &mainloop, struct options *opt)
             }
 
             g_endpoints[i] = uart.release();
-            mainloop.add_fd(g_endpoints[i]->fd, g_endpoints[i], EPOLLIN);
+            mainloop.add_fd(g_endpoints[i]->fd, g_endpoints[i], EVFILT_READ);
             i++;
             break;
         }
@@ -402,7 +429,7 @@ bool Mainloop::add_endpoints(Mainloop &mainloop, struct options *opt)
             }
 
             g_endpoints[i] = udp.release();
-            mainloop.add_fd(g_endpoints[i]->fd, g_endpoints[i], EPOLLIN);
+            mainloop.add_fd(g_endpoints[i]->fd, g_endpoints[i], EVFILT_READ);
             i++;
             break;
         }
@@ -484,11 +511,19 @@ int Mainloop::tcp_open(unsigned long tcp_port)
     struct sockaddr_in sockaddr = { };
     int val = 1;
 
-    fd = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK, 0);
+    fd = socket(AF_INET, SOCK_STREAM, 0);
     if (fd == -1) {
         log_error("Could not create tcp socket (%m)");
         return -1;
     }
+
+#ifdef __APPLE__
+    if (fcntl(fd, F_SETFL, O_NONBLOCK) == -1) {
+        log_error("Could not create non-blocking tcp socket (%m)");
+        close(fd);
+        return -1;
+    }
+#endif
 
     setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &val, sizeof(val));
 
@@ -508,7 +543,7 @@ int Mainloop::tcp_open(unsigned long tcp_port)
         return -1;
     }
 
-    add_fd(fd, &g_tcp_fd, EPOLLIN);
+    add_fd(fd, &g_tcp_fd, EVFILT_READ);
 
     log_info("Open TCP [%d] 0.0.0.0:%lu *", fd, tcp_port);
 
@@ -517,25 +552,17 @@ int Mainloop::tcp_open(unsigned long tcp_port)
 
 Timeout *Mainloop::add_timeout(uint32_t timeout_msec, std::function<bool(void*)> cb, const void *data)
 {
-    struct itimerspec ts;
-    Timeout *t = new Timeout(cb, data);
+	struct kevent ev;
+
+	Timeout *t = new Timeout(cb, data);
 
     assert_or_return(t, NULL);
 
-    t->fd = timerfd_create(CLOCK_MONOTONIC, 0);
-    if (t->fd < 0) {
-        log_error("Unable to create timerfd: %m");
+	EV_SET(&ev, (uintptr_t) t, EVFILT_TIMER, EV_ADD, 0, timeout_msec, t);
+
+    if (kevent(epollfd, &ev, 1, NULL, 0, NULL) < 0) {
         goto error;
     }
-
-    ts.it_interval.tv_sec = timeout_msec / MSEC_PER_SEC;
-    ts.it_interval.tv_nsec = (timeout_msec % MSEC_PER_SEC) * NSEC_PER_MSEC;
-    ts.it_value.tv_sec = ts.it_interval.tv_sec;
-    ts.it_value.tv_nsec = ts.it_interval.tv_nsec;
-    timerfd_settime(t->fd, 0, &ts, NULL);
-
-    if (add_fd(t->fd, t, EPOLLIN) < 0)
-        goto error;
 
     t->next = _timeouts;
     _timeouts = t;
@@ -557,7 +584,7 @@ void Mainloop::_del_timeouts()
     // Guarantee one valid Timeout on the beginning of the list
     while (_timeouts && _timeouts->remove_me) {
         Timeout *next = _timeouts->next;
-        remove_fd(_timeouts->fd);
+        remove_timer(_timeouts);
         delete _timeouts;
         _timeouts = next;
     }
@@ -569,7 +596,7 @@ void Mainloop::_del_timeouts()
         while (current) {
             if (current->remove_me) {
                 prev->next = current->next;
-                remove_fd(current->fd);
+                remove_timer(current);
                 delete current;
                 current = prev->next;
             } else {

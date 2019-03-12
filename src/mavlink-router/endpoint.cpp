@@ -424,6 +424,24 @@ UartEndpoint::~UartEndpoint()
 
 int UartEndpoint::set_speed(speed_t baudrate)
 {
+#ifdef __APPLE__
+    struct termios tc;
+
+    if (tcgetattr(fd, &tc) == -1) {
+        log_error("Could not get termios (%m)");
+        return -1;
+    }
+ 
+    if (cfsetspeed(&tc, baudrate) == -1) {
+        log_error("Could not set terminal speed (%m)");	
+	return -1;
+    }
+
+    if (tcsetattr(fd, TCSANOW, &tc) == -1) {
+        log_error("Could not set terminal attributes (%m)");
+        return -1;
+    }
+#else
     struct termios2 tc;
 
     if (fd < 0) {
@@ -446,10 +464,15 @@ int UartEndpoint::set_speed(speed_t baudrate)
         log_error("Could not set terminal attributes (%m)");
         return -1;
     }
+#endif
 
     log_info("UART [%d] speed = %u", fd, baudrate);
 
+#ifdef __APPLE__
+    if (tcflush(fd, TCIOFLUSH) == -1) {
+#else
     if (ioctl(fd, TCFLSH, TCIOFLUSH) == -1) {
+#endif
         log_error("Could not flush terminal (%m)");
         return -1;
     }
@@ -459,7 +482,11 @@ int UartEndpoint::set_speed(speed_t baudrate)
 
 int UartEndpoint::set_flow_control(bool enabled)
 {
-    struct termios2 tc;
+#ifdef __APPLE__
+	log_error("UART endpoint not implemented on OS X");
+	return -1;
+#else
+	struct termios2 tc;
 
     if (fd < 0) {
         return -1;
@@ -484,11 +511,16 @@ int UartEndpoint::set_flow_control(bool enabled)
     log_info("UART [%d] flowcontrol = %s", fd, enabled ? "enabled" : "disabled");
 
     return 0;
+#endif
 }
 
 int UartEndpoint::open(const char *path)
 {
-    struct termios2 tc;
+#ifdef __APPLE__
+	log_error("UART endpoint not implemented on OS X");
+	return -1;
+#else
+	struct termios2 tc;
     const int bit_dtr = TIOCM_DTR;
     const int bit_rts = TIOCM_RTS;
 
@@ -557,6 +589,7 @@ fail:
     ::close(fd);
     fd = -1;
     return -1;
+#endif
 }
 
 bool UartEndpoint::_change_baud_cb(void *data)
@@ -758,10 +791,21 @@ TcpEndpoint::~TcpEndpoint()
 int TcpEndpoint::accept(int listener_fd)
 {
     socklen_t addrlen = sizeof(sockaddr);
+#ifdef __APPLE__
+    fd = ::accept(listener_fd, (struct sockaddr *)&sockaddr, &addrlen);
+#else
     fd = accept4(listener_fd, (struct sockaddr *)&sockaddr, &addrlen, SOCK_NONBLOCK);
+#endif
 
     if (fd == -1)
         return -1;
+
+#ifdef __APPLE__
+    if (fcntl(fd, F_SETFL, O_NONBLOCK) == -1) {
+        close();
+        return -1;
+    }
+#endif
 
     log_info("TCP connection [%d] accepted", fd);
 

@@ -65,5 +65,5 @@ int mkdir_p(const char *path, int len, mode_t mode);
                         __out[__len] = '\0'; \
                         (char *) memcpy (__out, __in, __len);}))
 
-#include <asm/ioctls.h>
+//#include <asm/ioctls.h>
 #endif

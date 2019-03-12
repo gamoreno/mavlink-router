@@ -91,7 +91,11 @@ static void help(FILE *fp) {
             "  -v --verbose                 Verbose. Same as --debug-log-level=debug\n"
             "  -V --version                 Show version\n"
             "  -h --help                    Print this message\n"
+#ifdef __APPLE__
+    		, getprogname());
+#else
             , program_invocation_short_name);
+#endif
 }
 
 static unsigned long find_next_endpoint_port(const char *ip)
@@ -113,6 +117,16 @@ static unsigned long find_next_endpoint_port(const char *ip)
 
     return port;
 }
+
+#ifdef __APPLE__
+static char *strchrnul(const char *s, int c) {
+	const char *p = strchr(s, c);
+	if (p == NULL) {
+		p = strchr(s, '\0');
+	}
+	return (char*)p;
+}
+#endif
 
 static int split_on_colon(const char *str, char **base, unsigned long *number)
 {

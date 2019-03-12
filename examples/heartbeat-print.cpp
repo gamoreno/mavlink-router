@@ -58,6 +58,16 @@ static void handle_new_message(const mavlink_message_t *msg)
     }
 }
 
+#ifdef __APPLE__
+static char *strchrnul(const char *s, int c) {
+	const char *p = strchr(s, c);
+	if (p == NULL) {
+		p = strchr(s, '\0');
+	}
+	return (char*)p;
+}
+#endif
+
 int main(int argc, char *argv[])
 {
     struct sockaddr_in sockaddr;

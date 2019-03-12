@@ -30,6 +30,9 @@ public:
     int handle_read() override;
     bool handle_canwrite() override;
 
+protected:
+    using Pollable::fd;
+
 private:
     std::function<bool(void*)> _cb;
     const void *_data;

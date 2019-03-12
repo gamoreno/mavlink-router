@@ -31,9 +31,10 @@ struct endpoint_entry {
 class Mainloop {
 public:
     int open();
-    int add_fd(int fd, void *data, int events);
-    int mod_fd(int fd, void *data, int events);
+    int add_fd(int fd, void *data, uint16_t event);
+    int mod_fd(int fd, void *data, uint16_t event);
     int remove_fd(int fd);
+    int remove_timer(Timeout* ident);
     void loop();
     void route_msg(struct buffer *buf, int target_sysid, int target_compid, int sender_sysid,
                    int sender_compid);

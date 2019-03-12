@@ -121,11 +121,6 @@ AM_CXXFLAGS = \
 	-ffunction-sections \
 	-fdata-sections
 
-AM_LDFLAGS = \
-	-Wl,--as-needed \
-	-Wl,--no-undefined \
-	-Wl,--gc-sections
-
 bin_PROGRAMS += mavlink-routerd
 mavlink_routerd_SOURCES = \
 	src/mavlink-router/autolog.cpp \
@@ -161,10 +156,10 @@ noinst_PROGRAMS += heartbeat-print
 heartbeat_print_SOURCES = \
 	examples/heartbeat-print.cpp
 
-noinst_PROGRAMS += px4-offboard-mode
-px4_offboard_mode_SOURCES = \
-	examples/px4-offboard-mode.cpp \
-	src/common/util.c
+#noinst_PROGRAMS += px4-offboard-mode
+#px4_offboard_mode_SOURCES = \
+#	examples/px4-offboard-mode.cpp \
+#	src/common/util.c
 
 noinst_PROGRAMS += arm-authorizer
 arm_authorizer_SOURCES = \

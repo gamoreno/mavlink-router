@@ -135,6 +135,16 @@ static struct tasks list[] = {
 
 static uint8_t task_list_index = 0;
 
+#ifdef __APPLE__
+static char *strchrnul(const char *s, int c) {
+	const char *p = strchr(s, c);
+	if (p == NULL) {
+		p = strchr(s, '\0');
+	}
+	return (char*)p;
+}
+#endif
+
 static void exit_signal_handler(int signum)
 {
     g_should_exit = true;

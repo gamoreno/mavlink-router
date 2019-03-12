@@ -20,9 +20,14 @@
 #include <string.h>
 #include <termios.h>
 #include <unistd.h>
+#include <common/log.h>
 
 int reset_uart(int fd)
 {
+#ifdef __APPLE__
+	log_error("UART endpoint not implemented on OS X");
+	return -1;
+#else
     struct termios tc = {};
     /* See termios(3) */
     const cc_t default_cc[] = { 03, 034, 0177, 025, 04, 0, 0, 0, 021, 023, 032, 0,
@@ -61,4 +66,5 @@ int reset_uart(int fd)
     }
 
     return 0;
+#endif
 }
