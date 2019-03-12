@@ -20,6 +20,7 @@
 #include <assert.h>
 #include <stdint.h>
 #include <unistd.h>
+#include <iostream>
 
 Timeout::Timeout(std::function<bool(void*)> cb, const void *data)
 {
@@ -30,10 +31,7 @@ Timeout::Timeout(std::function<bool(void*)> cb, const void *data)
 
 int Timeout::handle_read()
 {
-    uint64_t val = 0;
-    int ret = read(fd, &val, sizeof(val));
-
-    if (ret < 1 || val == 0 || remove_me)
+    if (remove_me)
         return 0;
 
     if (!_cb((void *)_data))
